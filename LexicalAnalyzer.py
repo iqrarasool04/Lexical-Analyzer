@@ -1,4 +1,5 @@
 from automata.fa.dfa import DFA
+import re
 
 # A list of C++ keywords
 cpp_keywords = [
@@ -247,6 +248,8 @@ class LexicalAnalyzer:
 
     def __init__(self):
         self.dfas = build_all_dfas()
+        self.errors = []
+        self.tokens = []
 
     def validate_with_dfa(self, token, dfa):
         """Check if the token is valid according to the DFA."""
@@ -271,6 +274,143 @@ class LexicalAnalyzer:
                 break  # If no whitespace or comment, stop skipping
         return i
 
+    def log_error(self, line, column, message):
+        """Log an error with line and column details."""
+        self.errors.append(f"Error at line {line}, column {column}: {message}")
+
+    def checking_unterminated_string(self, input_text, start_index):
+        """DFA-based function to validate a string literal."""
+        state = "q0"
+        index = start_index
+        line, column = self.get_line_column(start_index, input_text)
+
+        valid_escape_chars = {"n", "t", "r", "\"", "\\"}
+        while index < len(input_text):
+            char = input_text[index]
+
+            if state == "q0":
+                if char == "\"":
+                    state = "q1"
+                else:
+                    return None, start_index  # Not a string literal, return control to main tokenizer.
+
+            elif state == "q1":
+                if char == "\"":
+                    state = "qf"
+                    index += 1
+                    break
+                elif char == "\\":
+                    state = "q2"
+                elif char == "\n":
+                    self.log_error(line, column, "Unterminated string literal.")
+                    return None, index
+                # Stay in q1 for any valid string character.
+            
+            elif state == "q2":
+                if char in valid_escape_chars:
+                    state = "q1"
+                else:
+                    self.log_error(line, column, f"Invalid escape sequence: \\{char}")
+                    return None, index
+            
+            index += 1
+
+        if state != "qf":
+            self.log_error(line, column, "Unterminated string literal.")
+            return None, index
+
+        return input_text[start_index:index], index
+
+    def get_line_column(self, index, text):
+        """Helper function to calculate line and column number from index."""
+        lines = text[:index].split("\n")
+        line_number = len(lines)
+        column_number = len(lines[-1]) + 1
+        return line_number, column_number
+    
+    def check_token_validity_automata(self):
+        # Build the DFA
+        states = {"q0"}  # Include the initial state explicitly
+        alphabet = set()  # All valid characters (a-z, etc.)
+        transitions = {}  # Transition function
+        start_state = "q0"  # Initial state
+        accept_states = set()  # Final states
+
+        # Helper function to add transitions for a keyword
+        def add_keyword_to_dfa(keyword):
+            current_state = start_state
+            for char in keyword:
+                next_state = f"{current_state}_{char}"
+                alphabet.add(char)
+                states.add(next_state)
+                transitions[(current_state, char)] = next_state
+                current_state = next_state
+            # Mark the last state as an accept state
+            accept_states.add(current_state)
+
+        # Add all keywords to the DFA
+        for keyword in cpp_keywords:
+            add_keyword_to_dfa(keyword)
+
+        # Add reject state for invalid transitions
+        reject_state = "q_reject"
+        states.add(reject_state)
+        for state in states:
+            for char in alphabet:
+                if (state, char) not in transitions:
+                    transitions[(state, char)] = reject_state
+
+        # Define the DFA
+        return DFA(
+            states=states,
+            input_symbols=alphabet,
+            transitions={
+                state: {char: transitions.get((state, char), reject_state) for char in alphabet}
+                for state in states
+            },
+            initial_state=start_state,
+            final_states=accept_states
+        )
+
+    # Function to test a token
+    def is_cpp_keyword(self, dfa, token):
+        return dfa.accepts_input(token)
+
+    # def validate_number_format(self, number, line, column):
+    #     dfa = DFA(
+    #         states={'q0', 'q1', 'q2', 'q3'},
+    #         input_symbols={'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '-'},
+    #         transitions={
+    #             'q0': {'-': 'q1', **{str(i): 'q1' for i in range(10)}},
+    #             'q1': {**{str(i): 'q1' for i in range(10)}, '.': 'q2'},
+    #             'q2': {**{str(i): 'q3' for i in range(10)}},
+    #             'q3': {**{str(i): 'q3' for i in range(10)}},
+    #         },
+    #         initial_state='q0',
+    #         final_states={'q1', 'q3'}
+    #     )
+
+    #     if not dfa.accepts_input(number):
+    #         self.log_error(line, column, "Invalid number format.")
+
+
+    # def validate_escape_sequences(self, string, line, column):
+
+    #     dfa = DFA(
+    #         states={"q0", "q1", "q_accept"},
+    #         input_symbols={"\\", "n", "t"},
+    #         transitions={
+    #             "q0": {"\\": "q1"},
+    #             "q1": {"n": "q_accept", "t": "q_accept"},
+    #         },
+    #         initial_state="q0",
+    #         final_states={"q_accept"}
+    #     )
+
+    #     if not dfa.accepts_input(string):
+    #         self.log_error(line, column, f"Invalid escape sequence: {string}")
+
+    
     def tokenize(self, code):
         """Tokenize the code using DFAs."""
         tokens = []
@@ -353,15 +493,68 @@ class LexicalAnalyzer:
             print(f"Type: {token_type}, Value: {value}")
 
 
+
+import unittest
+
+class TestLexicalAnalyzer(unittest.TestCase):
+    def test_validate_number_format(self):
+        lexical_analyzer = LexicalAnalyzer()
+
+        # Valid Numbers
+        lexical_analyzer.validate_number_format("123", 1, 1)  # No error
+        lexical_analyzer.validate_number_format("123.45", 1, 1)  # No error
+        lexical_analyzer.validate_number_format("-123", 1, 1)  # No error
+        lexical_analyzer.validate_number_format("0.123", 1, 1)  # No error
+        lexical_analyzer.validate_number_format("123.", 1, 1)  # No error
+
+        # Invalid Numbers
+        lexical_analyzer.validate_number_format("123..45", 1, 1)  # Error
+        lexical_analyzer.validate_number_format("123.45.67", 1, 1)  # Error
+        lexical_analyzer.validate_number_format("abc", 1, 1)  # Error
+        lexical_analyzer.validate_number_format(".123", 1, 1)  # Error
+
+        assert len(lexical_analyzer.errors) == 4  # Should catch 4 errors
+
+    def test_validate_escape_sequences(self):
+        lexical_analyzer = LexicalAnalyzer()
+
+        # Valid escape sequences
+        lexical_analyzer.validate_escape_sequences("\\n", 1, 1)  # No error
+        lexical_analyzer.validate_escape_sequences("\\t", 1, 1)  # No error
+        lexical_analyzer.validate_escape_sequences("\\r", 1, 1)  # No error
+        lexical_analyzer.validate_escape_sequences("\\\\", 1, 1)  # No error
+        lexical_analyzer.validate_escape_sequences('\\"', 1, 1)  # No error
+
+        # Invalid escape sequences
+        lexical_analyzer.validate_escape_sequences("\\a", 1, 1)  # Error
+        lexical_analyzer.validate_escape_sequences("\\x", 1, 1)  # Error
+        lexical_analyzer.validate_escape_sequences("\\z", 1, 1)  # Error
+        lexical_analyzer.validate_escape_sequences("\\p", 1, 1)  # Error
+
+        assert len(lexical_analyzer.errors) == 4  # Should catch 4 errors
+
 if __name__ == "__main__":
-    code = """int main() {
-    _itt = 4 + 5;
-    string str = "Hello, World!";
-}"""
-    
-    analyzer = LexicalAnalyzer()
-    tokens = analyzer.tokenize(code)
-    analyzer.print_tokens(tokens)
+    unittest.main()
+
+
+
+# analyzer = LexicalAnalyzer()
+
+# test_cases = [
+#     ("\"Hello World\"", 0),  # Valid string literal
+#     ("\"Hello\nWorld", 0),  # Unterminated string literal due to newline
+#     ("\"Hello \\x World\"", 0),  # Invalid escape sequence
+#     ("Not a string", 0),  # No string literal
+#     ("\"Valid\\nString\"", 0),  # Valid escape sequence
+# ]
+
+# for test, start in test_cases:
+#     result, next_index = analyzer.checking_unterminated_string(test, start)
+#     print(f"Input: {test}")
+#     print(f"Result: {result}")
+#     print(f"Errors: {analyzer.errors}")
+#     analyzer.errors.clear()  # Reset errors for the next test case
+#     print("-" * 50)
 
 
 
