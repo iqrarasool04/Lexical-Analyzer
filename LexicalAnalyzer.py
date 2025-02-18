@@ -233,6 +233,114 @@ def test_stringliteral_automata():
         print("Some tests failed.")
 
 
+def build_invalid_escape_dfa():
+    """
+    Build a DFA that accepts (final state) if the input string
+    CONTAINS an invalid escape sequence anywhere.
+    """
+
+    # Define states
+    states = {"q0", "q1", "q_invalid"}
+
+    # Define the alphabet (minimal example).
+    # In practice, you may expand this to more ASCII characters.
+    valid_chars = set(
+        list("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()*+,-./:;<=>?@[]^_`{|}~")
+    )
+    # We'll add backslash \ and quotes " in a moment if not already in there
+    valid_chars.add("\\")
+    valid_chars.add('"')
+    
+    # Next, define your "valid" escape characters in C++
+    valid_escape_chars = {"n", "t", "r", "\\", '"'}
+
+    # We'll define the transition function as a nested dict,
+    # matching automata-lib's style:
+    transitions = {
+        "q0": {},
+        "q1": {},
+        "q_invalid": {}
+    }
+
+    # q0 transitions:
+    for c in valid_chars:
+        if c == "\\":
+            # On backslash, go to q1
+            transitions["q0"][c] = "q1"
+        else:
+            # Stay in q0 on any other character
+            transitions["q0"][c] = "q0"
+
+    # q1 transitions:
+    for c in valid_chars:
+        if c in valid_escape_chars:
+            # If the next character is a valid escape char, return to q0
+            transitions["q1"][c] = "q0"
+        else:
+            # If invalid, go to q_invalid
+            transitions["q1"][c] = "q_invalid"
+
+    # q_invalid transitions:
+    # Once we are in the invalid state, stay there
+    for c in valid_chars:
+        transitions["q_invalid"][c] = "q_invalid"
+
+    # Create the DFA
+    dfa = DFA(
+        states=states,
+        input_symbols=valid_chars,
+        transitions=transitions,
+        initial_state="q0",
+        final_states={"q_invalid"}  # Only invalid state is final (accepted)
+    )
+
+    return dfa
+
+def check_token_validity_automata():
+    # Build the DFA
+    states = {"q0"}  # Include the initial state explicitly
+    alphabet = set()  # All valid characters (a-z, etc.)
+    transitions = {}  # Transition function
+    start_state = "q0"  # Initial state
+    accept_states = set()  # Final states
+
+    # Helper function to add transitions for a keyword
+    def add_keyword_to_dfa(keyword):
+        current_state = start_state
+        for char in keyword:
+            next_state = f"{current_state}_{char}"
+            alphabet.add(char)
+            states.add(next_state)
+            transitions[(current_state, char)] = next_state
+            current_state = next_state
+        # Mark the last state as an accept state
+        accept_states.add(current_state)
+
+    # Add all keywords to the DFA
+    for keyword in cpp_keywords:
+        add_keyword_to_dfa(keyword)
+
+    # Add reject state for invalid transitions
+    reject_state = "q_reject"
+    states.add(reject_state)
+    for state in states:
+        for char in alphabet:
+            if (state, char) not in transitions:
+                transitions[(state, char)] = reject_state
+
+    # Define the DFA
+    return DFA(
+        states=states,
+        input_symbols=alphabet,
+        transitions={
+            state: {char: transitions.get((state, char), reject_state) for char in alphabet}
+            for state in states
+        },
+        initial_state=start_state,
+        final_states=accept_states
+    )
+
+
 def build_all_dfas():
     """Build all the necessary DFAs for C++ token types."""
     return {
@@ -241,7 +349,9 @@ def build_all_dfas():
         'number': number_dfa(),
         'operator': operator_dfa(),
         'punctuation': punctuation_dfa(),
-        'string_literal': automata_for_string_literals()  # Add the string literal DFA
+        'string_literal': automata_for_string_literals(),  # Add the string literal DFA
+        'escape_sequence': build_invalid_escape_dfa(),
+        'valid_tokens': check_token_validity_automata()
     }
 
 class LexicalAnalyzer:
@@ -327,88 +437,10 @@ class LexicalAnalyzer:
         line_number = len(lines)
         column_number = len(lines[-1]) + 1
         return line_number, column_number
-    
-    def check_token_validity_automata(self):
-        # Build the DFA
-        states = {"q0"}  # Include the initial state explicitly
-        alphabet = set()  # All valid characters (a-z, etc.)
-        transitions = {}  # Transition function
-        start_state = "q0"  # Initial state
-        accept_states = set()  # Final states
-
-        # Helper function to add transitions for a keyword
-        def add_keyword_to_dfa(keyword):
-            current_state = start_state
-            for char in keyword:
-                next_state = f"{current_state}_{char}"
-                alphabet.add(char)
-                states.add(next_state)
-                transitions[(current_state, char)] = next_state
-                current_state = next_state
-            # Mark the last state as an accept state
-            accept_states.add(current_state)
-
-        # Add all keywords to the DFA
-        for keyword in cpp_keywords:
-            add_keyword_to_dfa(keyword)
-
-        # Add reject state for invalid transitions
-        reject_state = "q_reject"
-        states.add(reject_state)
-        for state in states:
-            for char in alphabet:
-                if (state, char) not in transitions:
-                    transitions[(state, char)] = reject_state
-
-        # Define the DFA
-        return DFA(
-            states=states,
-            input_symbols=alphabet,
-            transitions={
-                state: {char: transitions.get((state, char), reject_state) for char in alphabet}
-                for state in states
-            },
-            initial_state=start_state,
-            final_states=accept_states
-        )
 
     # Function to test a token
     def is_cpp_keyword(self, dfa, token):
         return dfa.accepts_input(token)
-
-    # def validate_number_format(self, number, line, column):
-    #     dfa = DFA(
-    #         states={'q0', 'q1', 'q2', 'q3'},
-    #         input_symbols={'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '-'},
-    #         transitions={
-    #             'q0': {'-': 'q1', **{str(i): 'q1' for i in range(10)}},
-    #             'q1': {**{str(i): 'q1' for i in range(10)}, '.': 'q2'},
-    #             'q2': {**{str(i): 'q3' for i in range(10)}},
-    #             'q3': {**{str(i): 'q3' for i in range(10)}},
-    #         },
-    #         initial_state='q0',
-    #         final_states={'q1', 'q3'}
-    #     )
-
-    #     if not dfa.accepts_input(number):
-    #         self.log_error(line, column, "Invalid number format.")
-
-
-    # def validate_escape_sequences(self, string, line, column):
-
-    #     dfa = DFA(
-    #         states={"q0", "q1", "q_accept"},
-    #         input_symbols={"\\", "n", "t"},
-    #         transitions={
-    #             "q0": {"\\": "q1"},
-    #             "q1": {"n": "q_accept", "t": "q_accept"},
-    #         },
-    #         initial_state="q0",
-    #         final_states={"q_accept"}
-    #     )
-
-    #     if not dfa.accepts_input(string):
-    #         self.log_error(line, column, f"Invalid escape sequence: {string}")
 
     
     def tokenize(self, code):
@@ -497,44 +529,86 @@ class LexicalAnalyzer:
 import unittest
 
 class TestLexicalAnalyzer(unittest.TestCase):
-    def test_validate_number_format(self):
-        lexical_analyzer = LexicalAnalyzer()
+    # def test_validate_number_format(self):
+    #     lexical_analyzer = LexicalAnalyzer()
 
-        # Valid Numbers
-        lexical_analyzer.validate_number_format("123", 1, 1)  # No error
-        lexical_analyzer.validate_number_format("123.45", 1, 1)  # No error
-        lexical_analyzer.validate_number_format("-123", 1, 1)  # No error
-        lexical_analyzer.validate_number_format("0.123", 1, 1)  # No error
-        lexical_analyzer.validate_number_format("123.", 1, 1)  # No error
+    #     # Valid Numbers
+    #     lexical_analyzer.validate_number_format("123", 1, 1)  # No error
+    #     lexical_analyzer.validate_number_format("123.45", 1, 1)  # No error
+    #     lexical_analyzer.validate_number_format("-123", 1, 1)  # No error
+    #     lexical_analyzer.validate_number_format("0.123", 1, 1)  # No error
+    #     lexical_analyzer.validate_number_format("123.", 1, 1)  # No error
 
-        # Invalid Numbers
-        lexical_analyzer.validate_number_format("123..45", 1, 1)  # Error
-        lexical_analyzer.validate_number_format("123.45.67", 1, 1)  # Error
-        lexical_analyzer.validate_number_format("abc", 1, 1)  # Error
-        lexical_analyzer.validate_number_format(".123", 1, 1)  # Error
+    #     # Invalid Numbers
+    #     lexical_analyzer.validate_number_format("123..45", 1, 1)  # Error
+    #     lexical_analyzer.validate_number_format("123.45.67", 1, 1)  # Error
+    #     lexical_analyzer.validate_number_format("abc", 1, 1)  # Error
+    #     lexical_analyzer.validate_number_format(".123", 1, 1)  # Error
 
-        assert len(lexical_analyzer.errors) == 4  # Should catch 4 errors
+    #     assert len(lexical_analyzer.errors) == 4  # Should catch 4 errors
 
-    def test_validate_escape_sequences(self):
-        lexical_analyzer = LexicalAnalyzer()
+    def test_build_invalid_escape_dfa(self):
+        """
+        Test the DFA built by build_invalid_escape_dfa() to ensure it correctly
+        identifies strings with invalid escape sequences.
+        """
+        dfa = build_invalid_escape_dfa()
 
-        # Valid escape sequences
-        lexical_analyzer.validate_escape_sequences("\\n", 1, 1)  # No error
-        lexical_analyzer.validate_escape_sequences("\\t", 1, 1)  # No error
-        lexical_analyzer.validate_escape_sequences("\\r", 1, 1)  # No error
-        lexical_analyzer.validate_escape_sequences("\\\\", 1, 1)  # No error
-        lexical_analyzer.validate_escape_sequences('\\"', 1, 1)  # No error
+        # Test Cases without Invalid Escape Sequences (Should NOT be accepted)
+        valid_strings = [
+            "Hello World",
+            "Line1\\nLine2",
+            "Tab\\tSeparated",
+            'Backslash \\\\ and quote \\" are valid.',
+            "Normal string with multiple valid escapes: \\n, \\t, \\\\",
+            "Escaped backslash at end \\\\",
+            "Quote inside string: \"This is a quote\"",
+        ]
 
-        # Invalid escape sequences
-        lexical_analyzer.validate_escape_sequences("\\a", 1, 1)  # Error
-        lexical_analyzer.validate_escape_sequences("\\x", 1, 1)  # Error
-        lexical_analyzer.validate_escape_sequences("\\z", 1, 1)  # Error
-        lexical_analyzer.validate_escape_sequences("\\p", 1, 1)  # Error
+        for s in valid_strings:
+            with self.subTest(s=s):
+                self.assertFalse(dfa.accepts_input(s), f"Valid string incorrectly accepted: {s}")
 
-        assert len(lexical_analyzer.errors) == 4  # Should catch 4 errors
+        # Test Cases with Invalid Escape Sequences (Should be accepted)
+        invalid_strings = [
+            "Hello \\x World",           # \x is invalid
+            "Invalid escape \\q here",   # \q is invalid
+            "Mixed valid \\n and invalid \\y.",  # Contains \y
+            "Another invalid \\z escape",         # \z is invalid
+            "\\1 is not a valid escape",          # \1 is invalid
+            "Multiple invalid \\a \\b escapes",   # \a and \b are invalid in this DFA
+        ]
+
+        for s in invalid_strings:
+            with self.subTest(s=s):
+                self.assertTrue(dfa.accepts_input(s), f"Invalid string not accepted: {s}")
+
+    # Optionally, you can add more tests for edge cases
+    def test_build_invalid_escape_dfa_edge_cases(self):
+        """
+        Additional edge case tests for the invalid escape DFA.
+        """
+        dfa = build_invalid_escape_dfa()
+
+        edge_cases = {
+            "": False,  # Empty string
+            "\\n": False, # Valid escape
+            "\\m": True,  # Invalid escape
+            "No escapes here": False,
+            "Only invalid escapes \\k\\l\\m": True,
+            "Valid and invalid \\n\\k": True,
+            "Ends with invalid escape \\k": True,
+            "Starts with invalid escape \\k and then valid \\n": True,
+        }
+
+        for s, expected in edge_cases.items():
+            with self.subTest(s=s):
+                result = dfa.accepts_input(s)
+                self.assertEqual(result, expected, f"Edge case '{s}' failed. Expected {expected}, got {result}")
 
 if __name__ == "__main__":
     unittest.main()
+    # print(build_invalid_escape_dfa())
 
 
 
